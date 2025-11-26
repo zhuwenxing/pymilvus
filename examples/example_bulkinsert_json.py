@@ -330,7 +330,7 @@ def upload(data_folder: str,
     try:
         print("Prepare upload files")
         minio_client = Minio(endpoint=MINIO_ADDRESS, access_key=MINIO_ACCESS_KEY, secret_key=MINIO_SECRET_KEY, secure=False)
-        found = minio_client.bucket_exists(bucket_name)
+        found = minio_client.bucket_exists(bucket_name=bucket_name)
         if not found:
             print("MinIO bucket '{}' doesn't exist".format(bucket_name))
             return False, []
@@ -345,7 +345,7 @@ def upload(data_folder: str,
                             continue
                         local_full_path = os.path.join(parent, filename)
                         minio_file_path = os.path.join(remote_data_path, os.path.basename(folder), filename)
-                        minio_client.fput_object(bucket_name, minio_file_path, local_full_path)
+                        minio_client.fput_object(bucket_name=bucket_name, object_name=minio_file_path, file_path=local_full_path)
                         print("Upload file '{}' to '{}'".format(local_full_path, minio_file_path))
                         remote_files.append(minio_file_path)
                     for dir in dirnames:

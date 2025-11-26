@@ -192,7 +192,8 @@ class RemoteBulkWriter(LocalBulkWriter):
     def _stat_object(self, object_name: str):
         if isinstance(self._client, Minio):
             return self._client.stat_object(
-                bucket_name=self._connect_param._bucket_name, object_name=object_name
+                bucket_name=self._connect_param._bucket_name,
+                object_name=object_name,
             )
         if isinstance(self._client, BlobServiceClient):
             blob = self._client.get_blob_client(
@@ -218,7 +219,7 @@ class RemoteBulkWriter(LocalBulkWriter):
 
     def _bucket_exists(self) -> bool:
         if isinstance(self._client, Minio):
-            return self._client.bucket_exists(self._connect_param._bucket_name)
+            return self._client.bucket_exists(bucket_name=self._connect_param._bucket_name)
         if isinstance(self._client, BlobServiceClient):
             containers = self._client.list_containers()
             for container in containers:
@@ -235,7 +236,7 @@ class RemoteBulkWriter(LocalBulkWriter):
             self._client.fput_object(
                 bucket_name=self._connect_param._bucket_name,
                 object_name=object_name,
-                file_path=file_path,
+                file_path=str(file_path),
             )
         elif isinstance(self._client, BlobServiceClient):
             logger.info(f"Target bucket: '{self._connect_param._container_name}'")
