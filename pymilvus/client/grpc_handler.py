@@ -2637,7 +2637,7 @@ class GrpcHandler:
             request, timeout=timeout, metadata=_api_level_md(**kwargs)
         )
         check_status(response.status)
-        return list(response.snapshot_names)
+        return list(response.snapshots)
 
     @retry_on_rpc_failure()
     def describe_snapshot(
@@ -2721,17 +2721,18 @@ class GrpcHandler:
             request, timeout=timeout, metadata=_api_level_md(**kwargs)
         )
         check_status(response.status)
-        info = response.restore_info
+        info = response.info
         return {
             "job_id": info.job_id,
             "snapshot_name": info.snapshot_name,
+            "db_name": info.db_name,
             "collection_name": info.collection_name,
             "state": info.state,
             "state_name": milvus_types.RestoreSnapshotState.Name(info.state),
             "progress": info.progress,
             "reason": info.reason,
-            "start_ts": info.start_ts,
-            "end_ts": info.end_ts,
+            "start_time": info.start_time,
+            "time_cost": info.time_cost,
         }
 
     @retry_on_rpc_failure()
@@ -2761,16 +2762,17 @@ class GrpcHandler:
         )
         check_status(response.status)
         jobs = []
-        for info in response.restore_infos:
+        for info in response.jobs:
             jobs.append({
                 "job_id": info.job_id,
                 "snapshot_name": info.snapshot_name,
+                "db_name": info.db_name,
                 "collection_name": info.collection_name,
                 "state": info.state,
                 "state_name": milvus_types.RestoreSnapshotState.Name(info.state),
                 "progress": info.progress,
                 "reason": info.reason,
-                "start_ts": info.start_ts,
-                "end_ts": info.end_ts,
+                "start_time": info.start_time,
+                "time_cost": info.time_cost,
             })
         return jobs
