@@ -2554,3 +2554,223 @@ class GrpcHandler:
         )
         check_status(status)
         return status
+
+    # ====================== Snapshot ======================
+    @retry_on_rpc_failure()
+    def create_snapshot(
+        self,
+        snapshot_name: str,
+        collection_name: str,
+        db_name: str = "",
+        description: str = "",
+        timeout: Optional[float] = None,
+        **kwargs,
+    ):
+        """Create a snapshot for the specified collection.
+
+        Args:
+            snapshot_name: Name of the snapshot to create
+            collection_name: Name of the collection to snapshot
+            db_name: Database name (optional)
+            description: Description of the snapshot (optional)
+            timeout: Timeout in seconds (optional)
+
+        Raises:
+            MilvusException: If the snapshot creation fails
+        """
+        request = Prepare.create_snapshot_request(
+            snapshot_name=snapshot_name,
+            collection_name=collection_name,
+            db_name=db_name,
+            description=description,
+        )
+        status = self._stub.CreateSnapshot(
+            request, timeout=timeout, metadata=_api_level_md(**kwargs)
+        )
+        check_status(status)
+
+    @retry_on_rpc_failure()
+    def drop_snapshot(
+        self,
+        snapshot_name: str,
+        timeout: Optional[float] = None,
+        **kwargs,
+    ):
+        """Drop a snapshot by name.
+
+        Args:
+            snapshot_name: Name of the snapshot to drop
+            timeout: Timeout in seconds (optional)
+
+        Raises:
+            MilvusException: If the snapshot deletion fails
+        """
+        request = Prepare.drop_snapshot_request(snapshot_name=snapshot_name)
+        status = self._stub.DropSnapshot(
+            request, timeout=timeout, metadata=_api_level_md(**kwargs)
+        )
+        check_status(status)
+
+    @retry_on_rpc_failure()
+    def list_snapshots(
+        self,
+        collection_name: str = "",
+        db_name: str = "",
+        timeout: Optional[float] = None,
+        **kwargs,
+    ) -> List[str]:
+        """List all snapshots.
+
+        Args:
+            collection_name: Filter by collection name (optional)
+            db_name: Database name (optional)
+            timeout: Timeout in seconds (optional)
+
+        Returns:
+            List of snapshot names
+        """
+        request = Prepare.list_snapshots_request(
+            collection_name=collection_name,
+            db_name=db_name,
+        )
+        response = self._stub.ListSnapshots(
+            request, timeout=timeout, metadata=_api_level_md(**kwargs)
+        )
+        check_status(response.status)
+        return list(response.snapshot_names)
+
+    @retry_on_rpc_failure()
+    def describe_snapshot(
+        self,
+        snapshot_name: str,
+        timeout: Optional[float] = None,
+        **kwargs,
+    ) -> Dict:
+        """Describe a snapshot by name.
+
+        Args:
+            snapshot_name: Name of the snapshot
+            timeout: Timeout in seconds (optional)
+
+        Returns:
+            Dictionary containing snapshot information
+        """
+        request = Prepare.describe_snapshot_request(snapshot_name=snapshot_name)
+        response = self._stub.DescribeSnapshot(
+            request, timeout=timeout, metadata=_api_level_md(**kwargs)
+        )
+        check_status(response.status)
+        return {
+            "name": response.name,
+            "description": response.description,
+            "collection_name": response.collection_name,
+            "partition_names": list(response.partition_names),
+            "create_ts": response.create_ts,
+            "s3_location": response.s3_location,
+        }
+
+    @retry_on_rpc_failure()
+    def restore_snapshot(
+        self,
+        snapshot_name: str,
+        collection_name: str,
+        db_name: str = "",
+        timeout: Optional[float] = None,
+        **kwargs,
+    ) -> int:
+        """Restore a snapshot to a new collection.
+
+        Args:
+            snapshot_name: Name of the snapshot to restore
+            collection_name: Name of the target collection
+            db_name: Database name (optional)
+            timeout: Timeout in seconds (optional)
+
+        Returns:
+            Job ID for tracking the restore operation
+        """
+        request = Prepare.restore_snapshot_request(
+            snapshot_name=snapshot_name,
+            collection_name=collection_name,
+            db_name=db_name,
+        )
+        response = self._stub.RestoreSnapshot(
+            request, timeout=timeout, metadata=_api_level_md(**kwargs)
+        )
+        check_status(response.status)
+        return response.job_id
+
+    @retry_on_rpc_failure()
+    def get_restore_snapshot_state(
+        self,
+        job_id: int,
+        timeout: Optional[float] = None,
+        **kwargs,
+    ) -> Dict:
+        """Get the state of a restore snapshot job.
+
+        Args:
+            job_id: The job ID returned by restore_snapshot
+            timeout: Timeout in seconds (optional)
+
+        Returns:
+            Dictionary containing restore job state information
+        """
+        request = Prepare.get_restore_snapshot_state_request(job_id=job_id)
+        response = self._stub.GetRestoreSnapshotState(
+            request, timeout=timeout, metadata=_api_level_md(**kwargs)
+        )
+        check_status(response.status)
+        info = response.restore_info
+        return {
+            "job_id": info.job_id,
+            "snapshot_name": info.snapshot_name,
+            "collection_name": info.collection_name,
+            "state": info.state,
+            "state_name": milvus_types.RestoreSnapshotState.Name(info.state),
+            "progress": info.progress,
+            "reason": info.reason,
+            "start_ts": info.start_ts,
+            "end_ts": info.end_ts,
+        }
+
+    @retry_on_rpc_failure()
+    def list_restore_snapshot_jobs(
+        self,
+        collection_name: str = "",
+        db_name: str = "",
+        timeout: Optional[float] = None,
+        **kwargs,
+    ) -> List[Dict]:
+        """List all restore snapshot jobs.
+
+        Args:
+            collection_name: Filter by collection name (optional)
+            db_name: Database name (optional)
+            timeout: Timeout in seconds (optional)
+
+        Returns:
+            List of restore job information dictionaries
+        """
+        request = Prepare.list_restore_snapshot_jobs_request(
+            collection_name=collection_name,
+            db_name=db_name,
+        )
+        response = self._stub.ListRestoreSnapshotJobs(
+            request, timeout=timeout, metadata=_api_level_md(**kwargs)
+        )
+        check_status(response.status)
+        jobs = []
+        for info in response.restore_infos:
+            jobs.append({
+                "job_id": info.job_id,
+                "snapshot_name": info.snapshot_name,
+                "collection_name": info.collection_name,
+                "state": info.state,
+                "state_name": milvus_types.RestoreSnapshotState.Name(info.state),
+                "progress": info.progress,
+                "reason": info.reason,
+                "start_ts": info.start_ts,
+                "end_ts": info.end_ts,
+            })
+        return jobs

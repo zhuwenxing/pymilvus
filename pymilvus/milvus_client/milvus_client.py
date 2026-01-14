@@ -2165,3 +2165,201 @@ class MilvusClient(BaseMilvusClient):
             target_size=task._target_size,
             progress=task.progress_history(),
         )
+
+    # ====================== Snapshot ======================
+    def create_snapshot(
+        self,
+        snapshot_name: str,
+        collection_name: str,
+        description: str = "",
+        timeout: Optional[float] = None,
+    ) -> None:
+        """Create a snapshot for the specified collection.
+
+        A snapshot captures the complete state of a collection at a specific point in time,
+        including all vector data, metadata, index information, and schema definitions.
+
+        Args:
+            snapshot_name (str): Name of the snapshot to create. Must be unique.
+            collection_name (str): Name of the collection to snapshot.
+            description (str, optional): Description of the snapshot. Defaults to "".
+            timeout (float, optional): Timeout in seconds. Defaults to None.
+
+        Raises:
+            MilvusException: If the snapshot creation fails.
+
+        Example:
+            >>> client.create_snapshot(
+            ...     snapshot_name="backup_20240101",
+            ...     collection_name="my_collection",
+            ...     description="Daily backup"
+            ... )
+        """
+        conn = self._get_connection()
+        conn.create_snapshot(
+            snapshot_name=snapshot_name,
+            collection_name=collection_name,
+            description=description,
+            timeout=timeout,
+        )
+
+    def drop_snapshot(
+        self,
+        snapshot_name: str,
+        timeout: Optional[float] = None,
+    ) -> None:
+        """Drop a snapshot by name.
+
+        Args:
+            snapshot_name (str): Name of the snapshot to drop.
+            timeout (float, optional): Timeout in seconds. Defaults to None.
+
+        Raises:
+            MilvusException: If the snapshot deletion fails.
+
+        Example:
+            >>> client.drop_snapshot(snapshot_name="backup_20240101")
+        """
+        conn = self._get_connection()
+        conn.drop_snapshot(snapshot_name=snapshot_name, timeout=timeout)
+
+    def list_snapshots(
+        self,
+        collection_name: str = "",
+        timeout: Optional[float] = None,
+    ) -> List[str]:
+        """List all snapshots.
+
+        Args:
+            collection_name (str, optional): Filter by collection name. Defaults to "".
+            timeout (float, optional): Timeout in seconds. Defaults to None.
+
+        Returns:
+            List[str]: List of snapshot names.
+
+        Example:
+            >>> snapshots = client.list_snapshots(collection_name="my_collection")
+            >>> print(snapshots)
+            ['backup_20240101', 'backup_20240102']
+        """
+        conn = self._get_connection()
+        return conn.list_snapshots(collection_name=collection_name, timeout=timeout)
+
+    def describe_snapshot(
+        self,
+        snapshot_name: str,
+        timeout: Optional[float] = None,
+    ) -> Dict:
+        """Describe a snapshot by name.
+
+        Args:
+            snapshot_name (str): Name of the snapshot.
+            timeout (float, optional): Timeout in seconds. Defaults to None.
+
+        Returns:
+            Dict: Dictionary containing snapshot information:
+                - name (str): Snapshot name
+                - description (str): Snapshot description
+                - collection_name (str): Source collection name
+                - partition_names (List[str]): List of partition names
+                - create_ts (int): Creation timestamp
+                - s3_location (str): Storage location
+
+        Example:
+            >>> info = client.describe_snapshot(snapshot_name="backup_20240101")
+            >>> print(info["collection_name"])
+            'my_collection'
+        """
+        conn = self._get_connection()
+        return conn.describe_snapshot(snapshot_name=snapshot_name, timeout=timeout)
+
+    def restore_snapshot(
+        self,
+        snapshot_name: str,
+        collection_name: str,
+        timeout: Optional[float] = None,
+    ) -> int:
+        """Restore a snapshot to a new collection.
+
+        This operation is asynchronous. Use get_restore_snapshot_state() to track progress.
+
+        Args:
+            snapshot_name (str): Name of the snapshot to restore.
+            collection_name (str): Name of the target collection (must not exist).
+            timeout (float, optional): Timeout in seconds. Defaults to None.
+
+        Returns:
+            int: Job ID for tracking the restore operation.
+
+        Raises:
+            MilvusException: If the target collection already exists or snapshot not found.
+
+        Example:
+            >>> job_id = client.restore_snapshot(
+            ...     snapshot_name="backup_20240101",
+            ...     collection_name="restored_collection"
+            ... )
+            >>> # Check progress
+            >>> state = client.get_restore_snapshot_state(job_id)
+        """
+        conn = self._get_connection()
+        return conn.restore_snapshot(
+            snapshot_name=snapshot_name,
+            collection_name=collection_name,
+            timeout=timeout,
+        )
+
+    def get_restore_snapshot_state(
+        self,
+        job_id: int,
+        timeout: Optional[float] = None,
+    ) -> Dict:
+        """Get the state of a restore snapshot job.
+
+        Args:
+            job_id (int): The job ID returned by restore_snapshot().
+            timeout (float, optional): Timeout in seconds. Defaults to None.
+
+        Returns:
+            Dict: Dictionary containing restore job state:
+                - job_id (int): Job ID
+                - snapshot_name (str): Source snapshot name
+                - collection_name (str): Target collection name
+                - state (int): State enum value
+                - state_name (str): Human-readable state name
+                - progress (int): Progress percentage (0-100)
+                - reason (str): Error reason if failed
+                - start_ts (int): Start timestamp
+                - end_ts (int): End timestamp
+
+        Example:
+            >>> state = client.get_restore_snapshot_state(job_id=12345)
+            >>> print(f"Progress: {state['progress']}%")
+            Progress: 75%
+        """
+        conn = self._get_connection()
+        return conn.get_restore_snapshot_state(job_id=job_id, timeout=timeout)
+
+    def list_restore_snapshot_jobs(
+        self,
+        collection_name: str = "",
+        timeout: Optional[float] = None,
+    ) -> List[Dict]:
+        """List all restore snapshot jobs.
+
+        Args:
+            collection_name (str, optional): Filter by collection name. Defaults to "".
+            timeout (float, optional): Timeout in seconds. Defaults to None.
+
+        Returns:
+            List[Dict]: List of restore job information dictionaries.
+
+        Example:
+            >>> jobs = client.list_restore_snapshot_jobs()
+            >>> for job in jobs:
+            ...     print(f"Job {job['job_id']}: {job['state_name']}")
+        """
+        conn = self._get_connection()
+        return conn.list_restore_snapshot_jobs(
+            collection_name=collection_name, timeout=timeout
+        )

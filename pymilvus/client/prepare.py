@@ -2585,3 +2585,58 @@ class Prepare:
             kv_pair = common_types.KeyValuePair(key=str(k), value=str(v))
             function_schema.params.append(kv_pair)
         return function_schema
+
+    # ====================== Snapshot ======================
+    @classmethod
+    def create_snapshot_request(
+        cls,
+        snapshot_name: str,
+        collection_name: str,
+        db_name: str = "",
+        description: str = "",
+    ):
+        return milvus_types.CreateSnapshotRequest(
+            name=snapshot_name,
+            collection_name=collection_name,
+            db_name=db_name,
+            description=description,
+        )
+
+    @classmethod
+    def drop_snapshot_request(cls, snapshot_name: str):
+        return milvus_types.DropSnapshotRequest(name=snapshot_name)
+
+    @classmethod
+    def list_snapshots_request(cls, collection_name: str = "", db_name: str = ""):
+        return milvus_types.ListSnapshotsRequest(
+            collection_name=collection_name,
+            db_name=db_name,
+        )
+
+    @classmethod
+    def describe_snapshot_request(cls, snapshot_name: str):
+        return milvus_types.DescribeSnapshotRequest(name=snapshot_name)
+
+    @classmethod
+    def restore_snapshot_request(
+        cls,
+        snapshot_name: str,
+        collection_name: str,
+        db_name: str = "",
+    ):
+        return milvus_types.RestoreSnapshotRequest(
+            name=snapshot_name,
+            collection_name=collection_name,
+            db_name=db_name,
+        )
+
+    @classmethod
+    def get_restore_snapshot_state_request(cls, job_id: int):
+        return milvus_types.GetRestoreSnapshotStateRequest(job_id=job_id)
+
+    @classmethod
+    def list_restore_snapshot_jobs_request(cls, collection_name: str = "", db_name: str = ""):
+        return milvus_types.ListRestoreSnapshotJobsRequest(
+            collection_name=collection_name,
+            db_name=db_name,
+        )
