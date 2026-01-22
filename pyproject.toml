@@ -90,6 +90,13 @@ dev = [
     "ml_dtypes",
 ]
 
+[dependency-groups]
+dev = [
+    "pytest>=8.3.5",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.14.13",
+]
+
 [tool.setuptools.dynamic]
 version = { attr = "_version_helper.version"}
 
@@ -161,6 +168,9 @@ lint.fixable = [
 ]
 lint.unfixable = []
 
+# Allow unused variables when underscore-prefixed.
+lint.dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
 show-fixes = true
 
 # Exclude a variety of commonly ignored directories.
@@ -193,9 +203,6 @@ exclude = [
 
 # Same as Black.
 line-length = 100
-
-# Allow unused variables when underscore-prefixed.
-lint.dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 
 # Assume Python 3.8
 target-version = "py38"

@@ -55,6 +55,7 @@ class MilvusClient(BaseMilvusClient):
         db_name: str = "",
         token: str = "",
         timeout: Optional[float] = None,
+        pool_size: int = 1,
         **kwargs,
     ) -> None:
         """A client for the common Milvus use case.
@@ -69,9 +70,13 @@ class MilvusClient(BaseMilvusClient):
             timeout (float, optional): What timeout to use for function calls. Defaults
                 to None.
                 Unit: second
+            pool_size (int, optional): The number of gRPC channels in the connection pool.
+                Default is 1 (single channel). Set to higher value to enable connection
+                pooling for better load balancing when connecting to Milvus clusters with
+                multiple proxy instances.
         """
         self._using = create_connection(
-            uri, token, db_name, user=user, password=password, timeout=timeout, **kwargs
+            uri, token, db_name, user=user, password=password, timeout=timeout, pool_size=pool_size, **kwargs
         )
         self.is_self_hosted = bool(self.get_server_type() == "milvus")
 

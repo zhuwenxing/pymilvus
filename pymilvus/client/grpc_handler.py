@@ -45,6 +45,7 @@ from .asynch import (
     SearchFuture,
 )
 from .cache import GlobalCache
+from .channel_pool import ChannelPool
 from .check import (
     check_id_and_data,
     check_pass_param,
@@ -152,10 +153,16 @@ class GrpcHandler:
         host: str = "",
         port: str = "",
         channel: Optional[grpc.Channel] = None,
+        pool_size: int = Config.MILVUS_POOL_SIZE,
         **kwargs,
     ) -> None:
         self._stub = None
         self._channel = channel
+        self._channel_pool: Optional[ChannelPool] = None
+        self._pool_size = pool_size
+        self._pool_stubs: List[milvus_pb2_grpc.MilvusServiceStub] = []
+        self._pool_stub_index = 0
+        self._pool_stub_lock = threading.Lock()
 
         addr = kwargs.get("address")
         self._address = addr if addr is not None else self.__get_address(uri, host, port)
@@ -237,7 +244,11 @@ class GrpcHandler:
 
     def close(self):
         self.deregister_state_change_callbacks()
-        if self._channel:
+        if self._channel_pool is not None:
+            self._channel_pool.close()
+            self._channel_pool = None
+            self._channel = None
+        elif self._channel is not None:
             self._channel.close()
             self._channel = None
 
@@ -272,49 +283,69 @@ class GrpcHandler:
             self._db_interceptor = interceptor.header_adder_interceptor(["dbname"], [db_name])
 
     def _setup_grpc_channel(self):
-        """Create a ddl grpc channel"""
+        """Create a ddl grpc channel.
+
+        If pool_size > 1 and no channel is provided, creates a ChannelPool
+        to manage multiple gRPC channels for better load balancing.
+        """
         if self._channel is None:
-            opts = [
-                (cygrpc.ChannelArgKey.max_send_message_length, -1),
-                (cygrpc.ChannelArgKey.max_receive_message_length, -1),
-                ("grpc.enable_retries", 1),
-                ("grpc.keepalive_time_ms", 55000),
-            ]
-            if not self._secure:
-                self._channel = grpc.insecure_channel(
+            if self._pool_size > 1:
+                # Use channel pool for multi-channel load balancing
+                self._channel_pool = ChannelPool(
                     self._address,
-                    options=opts,
+                    self._pool_size,
+                    secure=self._secure,
+                    server_name=self._server_name,
+                    server_pem_path=self._server_pem_path,
+                    client_pem_path=self._client_pem_path,
+                    client_key_path=self._client_key_path,
+                    ca_pem_path=self._ca_pem_path,
                 )
+                # Use first channel as the primary channel for state callbacks
+                self._channel = self._channel_pool.get_channel()
             else:
-                if self._server_name != "":
-                    opts.append(("grpc.ssl_target_name_override", self._server_name))
+                # Original single channel logic
+                opts = [
+                    (cygrpc.ChannelArgKey.max_send_message_length, -1),
+                    (cygrpc.ChannelArgKey.max_receive_message_length, -1),
+                    ("grpc.enable_retries", 1),
+                    ("grpc.keepalive_time_ms", 55000),
+                ]
+                if not self._secure:
+                    self._channel = grpc.insecure_channel(
+                        self._address,
+                        options=opts,
+                    )
+                else:
+                    if self._server_name != "":
+                        opts.append(("grpc.ssl_target_name_override", self._server_name))
 
-                root_cert, private_k, cert_chain = None, None, None
-                if self._server_pem_path != "":
-                    with Path(self._server_pem_path).open("rb") as f:
-                        root_cert = f.read()
-                elif (
-                    self._client_pem_path != ""
-                    and self._client_key_path != ""
-                    and self._ca_pem_path != ""
-                ):
-                    with Path(self._ca_pem_path).open("rb") as f:
-                        root_cert = f.read()
-                    with Path(self._client_key_path).open("rb") as f:
-                        private_k = f.read()
-                    with Path(self._client_pem_path).open("rb") as f:
-                        cert_chain = f.read()
+                    root_cert, private_k, cert_chain = None, None, None
+                    if self._server_pem_path != "":
+                        with Path(self._server_pem_path).open("rb") as f:
+                            root_cert = f.read()
+                    elif (
+                        self._client_pem_path != ""
+                        and self._client_key_path != ""
+                        and self._ca_pem_path != ""
+                    ):
+                        with Path(self._ca_pem_path).open("rb") as f:
+                            root_cert = f.read()
+                        with Path(self._client_key_path).open("rb") as f:
+                            private_k = f.read()
+                        with Path(self._client_pem_path).open("rb") as f:
+                            cert_chain = f.read()
 
-                creds = grpc.ssl_channel_credentials(
-                    root_certificates=root_cert,
-                    private_key=private_k,
-                    certificate_chain=cert_chain,
-                )
-                self._channel = grpc.secure_channel(
-                    self._address,
-                    creds,
-                    options=opts,
-                )
+                    creds = grpc.ssl_channel_credentials(
+                        root_certificates=root_cert,
+                        private_key=private_k,
+                        certificate_chain=cert_chain,
+                    )
+                    self._channel = grpc.secure_channel(
+                        self._address,
+                        creds,
+                        options=opts,
+                    )
 
         # avoid to add duplicate headers.
         self._final_channel = self._channel
@@ -336,6 +367,25 @@ class GrpcHandler:
         self._log_level = log_level
         self._setup_grpc_channel()
 
+    def _get_stub(self) -> milvus_pb2_grpc.MilvusServiceStub:
+        """Get a stub for making RPC calls.
+
+        When using a channel pool with pre-initialized stubs, returns the next
+        stub in the pool using round-robin selection for load balancing.
+
+        When not using a channel pool, returns the default stub.
+
+        Returns:
+            A MilvusServiceStub instance.
+        """
+        if not self._pool_stubs:
+            return self._stub
+
+        with self._pool_stub_lock:
+            stub = self._pool_stubs[self._pool_stub_index]
+            self._pool_stub_index = (self._pool_stub_index + 1) % len(self._pool_stubs)
+            return stub
+
     def _setup_identifier_interceptor(self, user: str, timeout: int = 10):
         host = socket.gethostname()
         self._identifier = self.__internal_register(user, host, timeout=timeout)
@@ -346,6 +396,33 @@ class GrpcHandler:
             self._final_channel, self._identifier_interceptor
         )
         self._stub = milvus_pb2_grpc.MilvusServiceStub(self._final_channel)
+
+        # Initialize pool stubs if using channel pool
+        self._setup_pool_stubs()
+
+    def _setup_pool_stubs(self):
+        """Initialize stubs for all channels in the pool.
+
+        Called after identifier interceptor is set up. Creates a stub for each
+        channel in the pool with all interceptors applied.
+        """
+        if self._channel_pool is None:
+            return
+
+        self._pool_stubs.clear()
+        # Create a stub for each channel in the pool
+        for _ in range(self._channel_pool.pool_size):
+            channel = self._channel_pool.get_channel()
+            final_channel = channel
+            if self._authorization_interceptor:
+                final_channel = grpc.intercept_channel(
+                    final_channel, self._authorization_interceptor
+                )
+            if self._db_interceptor:
+                final_channel = grpc.intercept_channel(final_channel, self._db_interceptor)
+            if self._identifier_interceptor:
+                final_channel = grpc.intercept_channel(final_channel, self._identifier_interceptor)
+            self._pool_stubs.append(milvus_pb2_grpc.MilvusServiceStub(final_channel))
 
     @property
     def server_address(self):
@@ -682,7 +759,8 @@ class GrpcHandler:
         request = self._prepare_row_insert_request(
             collection_name, entities, partition_name, schema, timeout, **kwargs
         )
-        resp = self._stub.Insert(request=request, timeout=timeout, metadata=_api_level_md(**kwargs))
+        stub = self._get_stub()
+        resp = stub.Insert(request=request, timeout=timeout, metadata=_api_level_md(**kwargs))
         check_status(resp.status)
         ts_utils.update_collection_ts(
             collection_name, resp.timestamp, self.server_address, self._get_db_name()
@@ -792,7 +870,8 @@ class GrpcHandler:
             request = self._prepare_batch_insert_request(
                 collection_name, entities, partition_name, timeout, **kwargs
             )
-            rf = self._stub.Insert.future(
+            stub = self._get_stub()
+            rf = stub.Insert.future(
                 request, timeout=timeout, metadata=_api_level_md(**kwargs)
             )
             if kwargs.get("_async", False):
@@ -913,7 +992,8 @@ class GrpcHandler:
             request = self._prepare_batch_upsert_request(
                 collection_name, entities, partition_name, timeout, **kwargs
             )
-            rf = self._stub.Upsert.future(
+            stub = self._get_stub()
+            rf = stub.Upsert.future(
                 request, timeout=timeout, metadata=_api_level_md(**kwargs)
             )
             if kwargs.get("_async", False) is True:
@@ -984,7 +1064,8 @@ class GrpcHandler:
         request = self._prepare_row_upsert_request(
             collection_name, entities, partition_name, timeout, **kwargs
         )
-        response = self._stub.Upsert(request, timeout=timeout, metadata=_api_level_md(**kwargs))
+        stub = self._get_stub()
+        response = stub.Upsert(request, timeout=timeout, metadata=_api_level_md(**kwargs))
         check_status(response.status)
         m = MutationResult(response)
         ts_utils.update_collection_ts(
@@ -996,14 +1077,15 @@ class GrpcHandler:
         self, request: milvus_types.SearchRequest, timeout: Optional[float] = None, **kwargs
     ):
         try:
+            stub = self._get_stub()
             if kwargs.get("_async", False):
-                future = self._stub.Search.future(
+                future = stub.Search.future(
                     request, timeout=timeout, metadata=_api_level_md(**kwargs)
                 )
                 func = kwargs.get("_callback")
                 return SearchFuture(future, func)
 
-            response = self._stub.Search(request, timeout=timeout, metadata=_api_level_md(**kwargs))
+            response = stub.Search(request, timeout=timeout, metadata=_api_level_md(**kwargs))
             check_status(response.status)
             round_decimal = kwargs.get("round_decimal", -1)
             return SearchResult(
@@ -1021,14 +1103,15 @@ class GrpcHandler:
         self, request: milvus_types.HybridSearchRequest, timeout: Optional[float] = None, **kwargs
     ):
         try:
+            stub = self._get_stub()
             if kwargs.get("_async", False):
-                future = self._stub.HybridSearch.future(
+                future = stub.HybridSearch.future(
                     request, timeout=timeout, metadata=_api_level_md(**kwargs)
                 )
                 func = kwargs.get("_callback")
                 return SearchFuture(future, func)
 
-            response = self._stub.HybridSearch(
+            response = stub.HybridSearch(
                 request, timeout=timeout, metadata=_api_level_md(**kwargs)
             )
             check_status(response.status)
@@ -1867,7 +1950,8 @@ class GrpcHandler:
             **kwargs,
         )
 
-        response = self._stub.Query(request, timeout=timeout, metadata=_api_level_md(**kwargs))
+        stub = self._get_stub()
+        response = stub.Query(request, timeout=timeout, metadata=_api_level_md(**kwargs))
         if Status.EMPTY_COLLECTION in {response.status.code, response.status.error_code}:
             return []
         check_status(response.status)

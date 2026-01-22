@@ -268,6 +268,7 @@ class Connections(metaclass=SingleInstanceMetaClass):
         db_name: str = "default",
         token: str = "",
         _async: bool = False,
+        pool_size: int = Config.MILVUS_POOL_SIZE,
         **kwargs,
     ) -> None:
         """Constructs a milvus connection and register it under given alias.
@@ -281,6 +282,9 @@ class Connections(metaclass=SingleInstanceMetaClass):
             db_name (str): The database name of milvus server.
             timeout (float, Optional) The timeout for the connection. Default is 10 seconds.
                 Unit: second
+            pool_size (int, Optional): The number of gRPC channels in the connection pool.
+                Default is 1 (single channel). Set to higher value to enable connection pooling
+                for better load balancing when connecting to Milvus clusters with multiple proxies.
 
             **kwargs:
                 * address (str, Optional) -- The actual address of Milvus instance.
@@ -351,9 +355,14 @@ class Connections(metaclass=SingleInstanceMetaClass):
         kwargs_copy["password"] = password
         kwargs_copy["db_name"] = db_name
         kwargs_copy["token"] = token
+        kwargs_copy["pool_size"] = pool_size
 
         def connect_milvus(**kwargs):
-            gh = GrpcHandler(**kwargs) if not _async else AsyncGrpcHandler(**kwargs)
+            gh = (
+                GrpcHandler(pool_size=pool_size, **kwargs)
+                if not _async
+                else AsyncGrpcHandler(pool_size=pool_size, **kwargs)
+            )
             config_to_keep = {
                 k: v
                 for k, v in kwargs.items()

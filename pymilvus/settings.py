@@ -14,6 +14,12 @@ class Config:
     MILVUS_CONN_ALIAS = str(os.getenv("MILVUS_CONN_ALIAS", "default"))
     MILVUS_CONN_TIMEOUT = float(os.getenv("MILVUS_CONN_TIMEOUT", "10.0"))
 
+    # Connection pool size: number of gRPC channels per connection.
+    # Default is 1 (single channel, backward compatible behavior).
+    # Set to higher value to enable connection pooling for better load balancing
+    # when connecting to Milvus clusters with multiple proxy instances.
+    MILVUS_POOL_SIZE = int(os.getenv("MILVUS_POOL_SIZE", "1"))
+
     # legacy configs:
     DEFAULT_USING = MILVUS_CONN_ALIAS
     DEFAULT_CONNECT_TIMEOUT = MILVUS_CONN_TIMEOUT

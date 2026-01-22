@@ -16,9 +16,21 @@ def create_connection(
     *,
     user: str = "",
     password: str = "",
+    pool_size: int = 1,
     **kwargs,
 ) -> str:
     """Get or create the connection to the Milvus server.
+
+    Args:
+        uri: The URI of the Milvus server.
+        token: The authentication token.
+        db_name: The database name.
+        use_async: Whether to use async connection.
+        user: The username for authentication.
+        password: The password for authentication.
+        pool_size: The number of gRPC channels in the connection pool.
+            Default is 1 (single channel). Set to higher value to enable
+            connection pooling for better load balancing.
 
     Returns:
         str: The alias of the connection
@@ -53,6 +65,8 @@ def create_connection(
     if connections.has_connection(using):
         return using
 
-    connections.connect(using, user, password, db_name, token, uri=uri, _async=use_async, **kwargs)
+    connections.connect(
+        using, user, password, db_name, token, uri=uri, _async=use_async, pool_size=pool_size, **kwargs
+    )
     logger.debug("Created new connection using: %s", using)
     return using

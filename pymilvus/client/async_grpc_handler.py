@@ -2,6 +2,7 @@ import asyncio
 import base64
 import json
 import socket
+import threading
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
@@ -33,6 +34,7 @@ from . import entity_helper, ts_utils, utils
 from .abstract import AnnSearchRequest, BaseRanker, CollectionSchema, FieldSchema, MutationResult
 from .async_interceptor import async_header_adder_interceptor
 from .cache import GlobalCache
+from .channel_pool import AsyncChannelPool
 from .check import (
     check_id_and_data,
     check_pass_param,
@@ -75,10 +77,16 @@ class AsyncGrpcHandler:
         host: str = "",
         port: str = "",
         channel: Optional[grpc.aio.Channel] = None,
+        pool_size: int = Config.MILVUS_POOL_SIZE,
         **kwargs,
     ) -> None:
         self._async_stub = None
         self._async_channel = channel
+        self._channel_pool: Optional[AsyncChannelPool] = None
+        self._pool_size = pool_size
+        self._pool_stubs: List[milvus_pb2_grpc.MilvusServiceStub] = []
+        self._pool_stub_index = 0
+        self._pool_stub_lock = threading.Lock()
 
         addr = kwargs.get("address")
         self._address = addr if addr is not None else self.__get_address(uri, host, port)
@@ -120,8 +128,13 @@ class AsyncGrpcHandler:
         pass
 
     async def close(self):
-        await self._async_channel.close()
-        self._async_channel = None
+        if self._channel_pool is not None:
+            await self._channel_pool.close()
+            self._channel_pool = None
+            self._async_channel = None
+        elif self._async_channel is not None:
+            await self._async_channel.close()
+            self._async_channel = None
 
     def _setup_authorization_interceptor(self, user: str, password: str, token: str):
         keys = []
@@ -148,48 +161,69 @@ class AsyncGrpcHandler:
             self._db_name = db_name
 
     def _setup_grpc_channel(self, **kwargs):
+        """Create an async grpc channel.
+
+        If pool_size > 1 and no channel is provided, creates an AsyncChannelPool
+        to manage multiple gRPC channels for better load balancing.
+        """
         if self._async_channel is None:
-            opts = [
-                (cygrpc.ChannelArgKey.max_send_message_length, -1),
-                (cygrpc.ChannelArgKey.max_receive_message_length, -1),
-                ("grpc.enable_retries", 1),
-                ("grpc.keepalive_time_ms", 55000),
-            ]
-            if not self._secure:
-                self._async_channel = grpc.aio.insecure_channel(
+            if self._pool_size > 1:
+                # Use channel pool for multi-channel load balancing
+                self._channel_pool = AsyncChannelPool(
                     self._address,
-                    options=opts,
+                    self._pool_size,
+                    secure=self._secure,
+                    server_name=self._server_name,
+                    server_pem_path=self._server_pem_path,
+                    client_pem_path=self._client_pem_path,
+                    client_key_path=self._client_key_path,
+                    ca_pem_path=self._ca_pem_path,
                 )
+                # Use first channel as the primary channel
+                self._async_channel = self._channel_pool.get_channel()
             else:
-                if self._server_name != "":
-                    opts.append(("grpc.ssl_target_name_override", self._server_name))
+                # Original single channel logic
+                opts = [
+                    (cygrpc.ChannelArgKey.max_send_message_length, -1),
+                    (cygrpc.ChannelArgKey.max_receive_message_length, -1),
+                    ("grpc.enable_retries", 1),
+                    ("grpc.keepalive_time_ms", 55000),
+                ]
+                if not self._secure:
+                    self._async_channel = grpc.aio.insecure_channel(
+                        self._address,
+                        options=opts,
+                    )
+                else:
+                    if self._server_name != "":
+                        opts.append(("grpc.ssl_target_name_override", self._server_name))
 
-                root_cert, private_k, cert_chain = None, None, None
-                if self._server_pem_path != "":
-                    with Path(self._server_pem_path).open("rb") as f:
-                        root_cert = f.read()
-                elif (
-                    self._client_pem_path != ""
-                    and self._client_key_path != ""
-                    and self._ca_pem_path != ""
-                ):
-                    with Path(self._ca_pem_path).open("rb") as f:
-                        root_cert = f.read()
-                    with Path(self._client_key_path).open("rb") as f:
-                        private_k = f.read()
-                    with Path(self._client_pem_path).open("rb") as f:
-                        cert_chain = f.read()
+                    root_cert, private_k, cert_chain = None, None, None
+                    if self._server_pem_path != "":
+                        with Path(self._server_pem_path).open("rb") as f:
+                            root_cert = f.read()
+                    elif (
+                        self._client_pem_path != ""
+                        and self._client_key_path != ""
+                        and self._ca_pem_path != ""
+                    ):
+                        with Path(self._ca_pem_path).open("rb") as f:
+                            root_cert = f.read()
+                        with Path(self._client_key_path).open("rb") as f:
+                            private_k = f.read()
+                        with Path(self._client_pem_path).open("rb") as f:
+                            cert_chain = f.read()
 
-                creds = grpc.ssl_channel_credentials(
-                    root_certificates=root_cert,
-                    private_key=private_k,
-                    certificate_chain=cert_chain,
-                )
-                self._async_channel = grpc.aio.secure_channel(
-                    self._address,
-                    creds,
-                    options=opts,
-                )
+                    creds = grpc.ssl_channel_credentials(
+                        root_certificates=root_cert,
+                        private_key=private_k,
+                        certificate_chain=cert_chain,
+                    )
+                    self._async_channel = grpc.aio.secure_channel(
+                        self._address,
+                        creds,
+                        options=opts,
+                    )
 
         # avoid to add duplicate headers.
         self._final_channel = self._async_channel
@@ -232,11 +266,15 @@ class AsyncGrpcHandler:
                 req = Prepare.register_request(self._user, host)
                 response = await self._async_stub.Connect(request=req)
                 check_status(response.status)
+                self._identifier = response.identifier
                 _async_identifier_interceptor = async_header_adder_interceptor(
                     ["identifier"], [str(response.identifier)]
                 )
                 self._async_channel._unary_unary_interceptors.append(_async_identifier_interceptor)
                 self._async_stub = milvus_pb2_grpc.MilvusServiceStub(self._async_channel)
+
+                # Initialize pool stubs if using channel pool
+                self._setup_pool_stubs()
 
                 self._is_channel_ready = True
         except grpc.FutureTimeoutError as e:
@@ -246,6 +284,55 @@ class AsyncGrpcHandler:
             ) from e
         except Exception as e:
             raise e from e
+
+    def _setup_pool_stubs(self):
+        """Initialize stubs for all channels in the pool.
+
+        Called after identifier interceptor is set up. Creates a stub for each
+        channel in the pool with all interceptors applied.
+        """
+        if self._channel_pool is None:
+            return
+
+        self._pool_stubs.clear()
+        # For async handler, interceptors are managed differently
+        # We need to apply interceptors to each channel individually
+        for _ in range(self._channel_pool.pool_size):
+            channel = self._channel_pool.get_channel()
+            # Apply interceptors to this channel
+            if (
+                self._async_authorization_interceptor
+                and self._async_authorization_interceptor not in channel._unary_unary_interceptors
+            ):
+                channel._unary_unary_interceptors.append(self._async_authorization_interceptor)
+            if self._db_name:
+                db_interceptor = async_header_adder_interceptor(["dbname"], [self._db_name])
+                channel._unary_unary_interceptors.append(db_interceptor)
+            if hasattr(self, "_identifier"):
+                id_interceptor = async_header_adder_interceptor(
+                    ["identifier"], [str(self._identifier)]
+                )
+                channel._unary_unary_interceptors.append(id_interceptor)
+            self._pool_stubs.append(milvus_pb2_grpc.MilvusServiceStub(channel))
+
+    def _get_stub(self) -> milvus_pb2_grpc.MilvusServiceStub:
+        """Get a stub for making RPC calls.
+
+        When using a channel pool with pre-initialized stubs, returns the next
+        stub in the pool using round-robin selection for load balancing.
+
+        When not using a channel pool, returns the default stub.
+
+        Returns:
+            A MilvusServiceStub instance.
+        """
+        if not self._pool_stubs:
+            return self._async_stub
+
+        with self._pool_stub_lock:
+            stub = self._pool_stubs[self._pool_stub_index]
+            self._pool_stub_index = (self._pool_stub_index + 1) % len(self._pool_stubs)
+            return stub
 
     @retry_on_rpc_failure()
     async def create_collection(
@@ -603,9 +690,8 @@ class AsyncGrpcHandler:
         request = await self._prepare_row_insert_request(
             collection_name, entities, partition_name, schema, timeout, **kwargs
         )
-        resp = await self._async_stub.Insert(
-            request=request, timeout=timeout, metadata=_api_level_md(**kwargs)
-        )
+        stub = self._get_stub()
+        resp = await stub.Insert(request=request, timeout=timeout, metadata=_api_level_md(**kwargs))
         check_status(resp.status)
         ts_utils.update_collection_ts(
             collection_name, resp.timestamp, self.server_address, self._db_name
@@ -740,9 +826,8 @@ class AsyncGrpcHandler:
         request = await self._prepare_batch_upsert_request(
             collection_name, entities, partition_name, timeout, **kwargs
         )
-        response = await self._async_stub.Upsert(
-            request, timeout=timeout, metadata=_api_level_md(**kwargs)
-        )
+        stub = self._get_stub()
+        response = await stub.Upsert(request, timeout=timeout, metadata=_api_level_md(**kwargs))
         check_status(response.status)
         m = MutationResult(response)
         ts_utils.update_collection_ts(
@@ -793,9 +878,8 @@ class AsyncGrpcHandler:
         request = await self._prepare_row_upsert_request(
             collection_name, entities, partition_name, timeout, **kwargs
         )
-        response = await self._async_stub.Upsert(
-            request, timeout=timeout, metadata=_api_level_md(**kwargs)
-        )
+        stub = self._get_stub()
+        response = await stub.Upsert(request, timeout=timeout, metadata=_api_level_md(**kwargs))
         check_status(response.status)
         m = MutationResult(response)
         ts_utils.update_collection_ts(
@@ -806,9 +890,8 @@ class AsyncGrpcHandler:
     async def _execute_search(
         self, request: milvus_types.SearchRequest, timeout: Optional[float] = None, **kwargs
     ):
-        response = await self._async_stub.Search(
-            request, timeout=timeout, metadata=_api_level_md(**kwargs)
-        )
+        stub = self._get_stub()
+        response = await stub.Search(request, timeout=timeout, metadata=_api_level_md(**kwargs))
         check_status(response.status)
         round_decimal = kwargs.get("round_decimal", -1)
         return SearchResult(
@@ -1010,8 +1093,7 @@ class AsyncGrpcHandler:
             end = time.time()
             if isinstance(timeout, int) and end - start > timeout:
                 msg = (
-                    f"collection {collection_name} create index {index_name} "
-                    f"timeout in {timeout}s"
+                    f"collection {collection_name} create index {index_name} timeout in {timeout}s"
                 )
                 raise MilvusException(message=msg)
 
@@ -1235,9 +1317,8 @@ class AsyncGrpcHandler:
             **kwargs,
         )
 
-        response = await self._async_stub.Query(
-            request, timeout=timeout, metadata=_api_level_md(**kwargs)
-        )
+        stub = self._get_stub()
+        response = await stub.Query(request, timeout=timeout, metadata=_api_level_md(**kwargs))
         check_status(response.status)
 
         num_fields = len(response.fields_data)
