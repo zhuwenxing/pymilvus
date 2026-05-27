@@ -38,7 +38,7 @@ check_proto_product: gen_proto
 	./check_proto_product.sh
 
 version:
-	$(UV_RUN_DEV) python -c "import _version_helper; print(_version_helper.version)"
+	$(UV) run --no-project --with "setuptools-scm[toml]>=8" python -m setuptools_scm -c pyproject.toml
 
 install:
 	$(UV) sync

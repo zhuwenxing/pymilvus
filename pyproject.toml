@@ -4,7 +4,7 @@ requires = [
   "setuptools <= 75.3.2; python_version == '3.8'",
   "wheel",
   "gitpython",
-  "setuptools_scm[toml]>=6.2",
+  "setuptools_scm[toml]>=8",
 ]
 build-backend = "setuptools.build_meta"
 
@@ -93,7 +93,7 @@ dev = [
     "pytest-timeout>=1.3.4",
     "pytest-asyncio",
     "Cython>=3.0.0",
-    "setuptools_scm[toml]>=6.2",
+    "setuptools_scm[toml]>=8",
     "ruff>=0.12.9,<1",
     "black",
     # develop bulk_writer
@@ -118,8 +118,9 @@ release = [
 [tool.uv.dependency-groups]
 release = { requires-python = ">=3.9" }
 
-[tool.setuptools.dynamic]
-version = { attr = "_version_helper.version"}
+[tool.setuptools_scm]
+version_scheme = "release-branch-semver"
+local_scheme = "no-local-version"
 
 [tool.black]
 line-length = 100
